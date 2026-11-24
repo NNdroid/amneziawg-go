@@ -176,7 +176,7 @@ func (device *Device) tryIP4PEndpoint(peer *Peer, value string) (bool, error) {
 	// A literal IP4P IPv6 address decodes directly.
 	if addr, err := netip.ParseAddr(host); err == nil {
 		if ep, ok := ip.decodeIP4P(addr); ok {
-			peer.enableIP4P(host)
+			peer.enableIP4P(value, host)
 			peer.setIP4PResolved(ep)
 			return true, nil
 		}
@@ -191,7 +191,7 @@ func (device *Device) tryIP4PEndpoint(peer *Peer, value string) (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	peer.enableIP4P(host)
+	peer.enableIP4P(value, host)
 	peer.setIP4PResolved(ep)
 	return true, nil
 }

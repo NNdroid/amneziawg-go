@@ -63,4 +63,10 @@ func TestIP4PEndToEnd(t *testing.T) {
 	if !strings.Contains(got, "ip4p_host=tunnel.example.com") {
 		t.Errorf("IpcGet missing ip4p_host; got:\n%s", got)
 	}
+	if !strings.Contains(got, "ip4p_orig=tunnel.example.com:51820") {
+		t.Errorf("IpcGet missing ip4p_orig; got:\n%s", got)
+	}
+	if !strings.Contains(got, "ip4p_update_sec=") || !strings.Contains(got, "ip4p_update_nsec=") {
+		t.Errorf("IpcGet missing ip4p_update_sec/nsec; got:\n%s", got)
+	}
 }

@@ -37,10 +37,14 @@ type Peer struct {
 	// endpoint is an IP4P address (or a hostname that resolves to one), the
 	// decoded IPv4:port is stored in endpoint.val while host keeps the
 	// original hostname so the refresher can re-resolve it periodically.
+	// orig is the full original endpoint (host:port) for display, and
+	// updatedNano records when the endpoint was last successfully resolved.
 	ip4p struct {
-		host     string         // original hostname / literal IP4P address
-		resolved netip.AddrPort // last decoded IPv4:port
-		enabled  bool           // true when this peer uses IP4P
+		host        string         // original hostname / literal IP4P address
+		orig        string         // full original endpoint (host:port) for display
+		resolved    netip.AddrPort // last decoded IPv4:port
+		enabled     bool           // true when this peer uses IP4P
+		updatedNano atomic.Int64   // UnixNano of last successful resolution
 	}
 
 	timers struct {
@@ -130,16 +134,20 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 
 // enableIP4P marks this peer as using an IP4P endpoint and records the
 // original host (a hostname or a literal IP4P IPv6 address) that must be
-// re-resolved periodically.
-func (peer *Peer) enableIP4P(host string) {
+// re-resolved periodically. orig is the full original endpoint (host:port)
+// as configured, kept for display purposes.
+func (peer *Peer) enableIP4P(orig, host string) {
+	peer.ip4p.orig = orig
 	peer.ip4p.host = host
 	peer.ip4p.enabled = true
 }
 
 // setIP4PResolved updates the peer's decoded IP4P endpoint. It is called both
-// when the endpoint is first configured and on each periodic refresh.
+// when the endpoint is first configured and on each periodic refresh, and
+// records the resolution time so callers can report when IP4P was last updated.
 func (peer *Peer) setIP4PResolved(addrPort netip.AddrPort) {
 	peer.ip4p.resolved = addrPort
+	peer.ip4p.updatedNano.Store(time.Now().UnixNano())
 	peer.endpoint.Lock()
 	peer.endpoint.val = &conn.StdNetEndpoint{AddrPort: addrPort}
 	peer.endpoint.Unlock()

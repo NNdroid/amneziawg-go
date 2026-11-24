@@ -203,6 +203,13 @@ func (device *Device) IpcGetOperation(w io.Writer) error {
 			if peer.ip4p.enabled {
 				sendf("endpoint_ip4p=1")
 				sendf("ip4p_host=%s", peer.ip4p.host)
+				if peer.ip4p.orig != "" {
+					sendf("ip4p_orig=%s", peer.ip4p.orig)
+				}
+				if n := peer.ip4p.updatedNano.Load(); n > 0 {
+					sendf("ip4p_update_sec=%d", n/int64(time.Second))
+					sendf("ip4p_update_nsec=%d", n%int64(time.Second))
+				}
 			} else {
 				sendf("endpoint_ip4p=0")
 			}
