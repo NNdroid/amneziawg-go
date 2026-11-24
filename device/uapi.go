@@ -200,6 +200,12 @@ func (device *Device) IpcGetOperation(w io.Writer) error {
 				sendf("endpoint=%s", peer.endpoint.val.DstToString())
 			}
 			peer.endpoint.Unlock()
+			if peer.ip4p.enabled {
+				sendf("endpoint_ip4p=1")
+				sendf("ip4p_host=%s", peer.ip4p.host)
+			} else {
+				sendf("endpoint_ip4p=0")
+			}
 
 			nano := peer.lastHandshakeNano.Load()
 			secs := nano / time.Second.Nanoseconds()
@@ -540,6 +546,18 @@ func (device *Device) handleDeviceLine(ipcDev *ipcSetDevice, key, value string) 
 		device.log.Verbosef("UAPI: Updating disable cookies")
 		device.disableCookies.Store(val)
 
+	case "bootstrap_dns":
+		device.log.Verbosef("UAPI: Updating bootstrap DNS servers")
+		if err := device.appendBootstrapDns(value); err != nil {
+			return ipcErrorf(ipc.IpcErrorInvalid, "failed to set bootstrap DNS: %w", err)
+		}
+
+	case "ip4p_prefix":
+		device.log.Verbosef("UAPI: Updating IP4P prefix")
+		if err := device.setIP4PPrefix(value); err != nil {
+			return ipcErrorf(ipc.IpcErrorInvalid, "failed to set IP4P prefix: %w", err)
+		}
+
 	default:
 		return ipcErrorf(ipc.IpcErrorInvalid, "invalid UAPI device key: %v", key)
 	}
@@ -547,10 +565,59 @@ func (device *Device) handleDeviceLine(ipcDev *ipcSetDevice, key, value string) 
 	return nil
 }
 
+// appendBootstrapDns adds a comma-separated list of bootstrap DNS server
+// specifiers to the device's IP4P state, creating it on first use.
+func (device *Device) appendBootstrapDns(value string) error {
+	servers := splitCSV(value)
+	device.ip4pMutex.Lock()
+	defer device.ip4pMutex.Unlock()
+	if device.ip4p == nil {
+		st, err := newIP4PState(nil, "")
+		if err != nil {
+			return err
+		}
+		device.ip4p = st
+	}
+	for _, spec := range servers {
+		srv, err := parseBootstrapDnsServer(spec)
+		if err != nil {
+			return err
+		}
+		device.ip4p.servers = append(device.ip4p.servers, srv)
+	}
+	return nil
+}
+
+// setIP4PPrefix sets the IP4P IPv6 prefix used to recognise IP4P addresses.
+func (device *Device) setIP4PPrefix(value string) error {
+	device.ip4pMutex.Lock()
+	defer device.ip4pMutex.Unlock()
+	if device.ip4p == nil {
+		st, err := newIP4PState(nil, value)
+		if err != nil {
+			return err
+		}
+		device.ip4p = st
+		return nil
+	}
+	return device.ip4p.setPrefix(value)
+}
+
+// splitCSV splits a comma-separated list, trimming whitespace.
+func splitCSV(value string) []string {
+	var out []string
+	for _, part := range strings.Split(value, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // An ipcSetPeer is the current state of an IPC set operation on a peer.
 type ipcSetPeer struct {
 	*Peer        // Peer is the current peer being operated on
-	dummy   bool // dummy reports whether this peer is a temporary, placeholder peer
+	dummy   bool // dummy reports whether this is a temporary, placeholder peer
 	created bool // new reports whether this is a newly created peer
 	pkaOn   bool // pkaOn reports whether the peer had the persistent keepalive turn on
 }
@@ -649,6 +716,12 @@ func (device *Device) handlePeerLine(
 
 	case "endpoint":
 		device.log.Verbosef("%v - UAPI: Updating endpoint", peer.Peer)
+		if handled, err := device.tryIP4PEndpoint(peer.Peer, value); handled {
+			if err != nil {
+				return ipcErrorf(ipc.IpcErrorInvalid, "failed to set IP4P endpoint %v: %w", value, err)
+			}
+			break
+		}
 		endpoint, err := device.net.bind.ParseEndpoint(value)
 		if err != nil {
 			return ipcErrorf(ipc.IpcErrorInvalid, "failed to set endpoint %v: %w", value, err)

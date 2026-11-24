@@ -90,6 +90,13 @@ type Device struct {
 	closed   chan struct{}
 	log      *Logger
 
+	// ip4p holds the IP4P (IPv4 privacy) configuration and background
+	// refresher. It is nil until bootstrap DNS servers and an IP4P prefix are
+	// configured via UAPI. ip4pMutex guards ip4p against concurrent access
+	// between UAPI configuration and the background refresher.
+	ip4p      *ip4pState
+	ip4pMutex sync.Mutex
+
 	junk struct {
 		min   atomic.Uint32
 		max   atomic.Uint32
@@ -228,6 +235,9 @@ func (device *Device) upLocked() error {
 		}
 	}
 	device.peers.RUnlock()
+
+	// Start the periodic IP4P refresher once the interface is up.
+	device.startIP4PRefresher()
 	return nil
 }
 
@@ -244,6 +254,9 @@ func (device *Device) downLocked() error {
 		peer.Stop()
 	}
 	device.peers.RUnlock()
+
+	// Stop the periodic IP4P refresher when the interface goes down.
+	device.stopIP4PRefresher()
 	return err
 }
 

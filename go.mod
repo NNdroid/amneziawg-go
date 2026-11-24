@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/goccy/go-yaml v1.17.1
+	github.com/refraction-networking/utls v1.6.7
 	go.uber.org/atomic v1.11.0
 	golang.getoutline.org/sdk v0.0.23
 	golang.getoutline.org/sdk/x v0.2.0
@@ -15,10 +16,13 @@ require (
 )
 
 require (
+	github.com/andybalholm/brotli v1.1.1 // indirect
+	github.com/cloudflare/circl v1.5.0 // indirect
 	github.com/go-task/slim-sprig v0.0.0-20230315185526-52ccab3ef572 // indirect
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/pprof v0.0.0-20211214055906-6f57359322fd // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/klauspost/compress v1.17.11 // indirect
 	github.com/onsi/ginkgo/v2 v2.12.0 // indirect
 	github.com/quic-go/qpack v0.5.1 // indirect
 	github.com/quic-go/quic-go v0.48.1 // indirect

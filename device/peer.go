@@ -8,6 +8,7 @@ package device
 import (
 	"container/list"
 	"errors"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,6 +31,16 @@ type Peer struct {
 		val            conn.Endpoint
 		clearSrcOnTx   bool // signal to val.ClearSrc() prior to next packet transmission
 		disableRoaming bool
+	}
+
+	// ip4p holds the IP4P refresh state for this peer. When the peer's
+	// endpoint is an IP4P address (or a hostname that resolves to one), the
+	// decoded IPv4:port is stored in endpoint.val while host keeps the
+	// original hostname so the refresher can re-resolve it periodically.
+	ip4p struct {
+		host     string         // original hostname / literal IP4P address
+		resolved netip.AddrPort // last decoded IPv4:port
+		enabled  bool           // true when this peer uses IP4P
 	}
 
 	timers struct {
@@ -115,6 +126,23 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 	device.peers.keyMap[pk] = peer
 
 	return peer, nil
+}
+
+// enableIP4P marks this peer as using an IP4P endpoint and records the
+// original host (a hostname or a literal IP4P IPv6 address) that must be
+// re-resolved periodically.
+func (peer *Peer) enableIP4P(host string) {
+	peer.ip4p.host = host
+	peer.ip4p.enabled = true
+}
+
+// setIP4PResolved updates the peer's decoded IP4P endpoint. It is called both
+// when the endpoint is first configured and on each periodic refresh.
+func (peer *Peer) setIP4PResolved(addrPort netip.AddrPort) {
+	peer.ip4p.resolved = addrPort
+	peer.endpoint.Lock()
+	peer.endpoint.val = &conn.StdNetEndpoint{AddrPort: addrPort}
+	peer.endpoint.Unlock()
 }
 
 func (peer *Peer) SendBuffers(buffers [][]byte) error {
