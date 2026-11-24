@@ -238,6 +238,27 @@ func (device *Device) bootstrapDnsCount() int {
 	return len(device.ip4p.servers)
 }
 
+// SetSocketProtectFunc sets the callback used to protect sockets that carry
+// traffic outside the tunnel (e.g. bootstrap DNS queries for IP4P). On Android
+// this is wired to VpnService.protect(). Passing nil clears the callback.
+func (device *Device) SetSocketProtectFunc(fn func(fd int) error) {
+	if fn == nil {
+		device.socketProtect.Store(nil)
+		return
+	}
+	device.socketProtect.Store(&fn)
+}
+
+// getSocketProtect returns the currently configured socket-protect callback, or
+// nil if none is set. It is used by the bootstrap DNS client.
+func (device *Device) getSocketProtect() func(fd int) error {
+	fn := device.socketProtect.Load()
+	if fn == nil {
+		return nil
+	}
+	return *fn
+}
+
 // stopRefresher stops the background IP4P refresher goroutine.
 func (device *Device) stopIP4PRefresher() {
 	ip := device.ip4p

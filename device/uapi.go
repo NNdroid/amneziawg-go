@@ -592,6 +592,15 @@ func (device *Device) appendBootstrapDns(value string) error {
 		if err != nil {
 			return err
 		}
+		// Protect each DNS socket so the query bypasses the tunnel. When no
+		// protect callback is configured (e.g. the platform does not use one),
+		// the socket is left unprotected and the query proceeds normally.
+		srv.protect = func(fd int) error {
+			if fn := device.getSocketProtect(); fn != nil {
+				return fn(fd)
+			}
+			return nil
+		}
 		device.ip4p.servers = append(device.ip4p.servers, srv)
 	}
 	return nil

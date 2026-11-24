@@ -97,6 +97,13 @@ type Device struct {
 	ip4p      *ip4pState
 	ip4pMutex sync.Mutex
 
+	// socketProtect, when set, is invoked with the file descriptor of a socket
+	// before it is used to send traffic outside the tunnel. On Android it is
+	// wired to VpnService.protect() so that bootstrap DNS queries (used for
+	// IP4P resolution) bypass the tunnel and reach the configured resolver
+	// instead of looping back through the VPN.
+	socketProtect atomic.Pointer[func(fd int) error]
+
 	junk struct {
 		min   atomic.Uint32
 		max   atomic.Uint32

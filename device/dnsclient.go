@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	// uTLS declares itself as "package tls" (a drop-in replacement for
@@ -42,6 +43,27 @@ type bootstrapDnsServer struct {
 	// tlsConfig optionally customises TLS verification for DoT/DoH (e.g. a
 	// test root pool). When nil, the system roots are used.
 	tlsConfig *tls.Config
+	// protect, when non-nil, is invoked with the socket file descriptor before
+	// the socket is connected, so the query can bypass the tunnel (VpnService
+	// protect on Android). It prevents bootstrap DNS traffic from looping back
+	// through the VPN that is being configured.
+	protect func(fd int) error
+}
+
+// dialer returns a net.Dialer whose sockets are protected (via s.protect)
+// before connecting. This ensures bootstrap DNS traffic bypasses the tunnel.
+func (s bootstrapDnsServer) dialer() *net.Dialer {
+	d := &net.Dialer{Timeout: 5 * time.Second}
+	if s.protect != nil {
+		d.Control = func(network, address string, c syscall.RawConn) error {
+			var fd int
+			if err := c.Control(func(f uintptr) { fd = int(f) }); err != nil {
+				return err
+			}
+			return s.protect(fd)
+		}
+	}
+	return d
 }
 
 // parseBootstrapDnsServer parses a bootstrap DNS server specifier. Accepted
@@ -160,8 +182,7 @@ func (s bootstrapDnsServer) lookupAAAA(ctx context.Context, host string) ([]neti
 // exchangeUDP sends the DNS query over UDP and reads the response. It returns
 // an error if the reply is truncated so the caller can fall back to TCP.
 func (s bootstrapDnsServer) exchangeUDP(ctx context.Context, query []byte) ([]byte, error) {
-	d := net.Dialer{Timeout: 5 * time.Second}
-	conn, err := d.DialContext(ctx, "udp", s.addr)
+	conn, err := s.dialer().DialContext(ctx, "udp", s.addr)
 	if err != nil {
 		return nil, fmt.Errorf("udp dial %s: %w", s.addr, err)
 	}
@@ -195,8 +216,7 @@ func (s bootstrapDnsServer) exchangeUDP(ctx context.Context, query []byte) ([]by
 // exchangeTCP sends the DNS query over TCP (length-prefixed) and reads the
 // response.
 func (s bootstrapDnsServer) exchangeTCP(ctx context.Context, query []byte) ([]byte, error) {
-	d := net.Dialer{Timeout: 5 * time.Second}
-	conn, err := d.DialContext(ctx, "tcp", s.addr)
+	conn, err := s.dialer().DialContext(ctx, "tcp", s.addr)
 	if err != nil {
 		return nil, fmt.Errorf("tcp dial %s: %w", s.addr, err)
 	}
@@ -218,7 +238,7 @@ func (s bootstrapDnsServer) exchangeTLS(ctx context.Context, query []byte) ([]by
 	// is a Go-based VPN resolver. The fingerprint's default ALPN (h2,
 	// http/1.1) is harmless on port 853, where DoT servers treat ALPN as
 	// optional.
-	conn, err := utlsDialContext(ctx, "tcp", s.addr, host, false, s.tlsConfig)
+	conn, err := utlsDialContext(ctx, s.dialer(), "tcp", s.addr, host, false, s.tlsConfig)
 	if err != nil {
 		return nil, fmt.Errorf("dot dial %s: %w", s.addr, err)
 	}
@@ -255,7 +275,11 @@ func (s bootstrapDnsServer) exchangeDoH(ctx context.Context, query []byte) ([]by
 	// Plaintext HTTP is only used for local/test resolvers; no TLS, so no
 	// uTLS fingerprint masking is needed.
 	if u.Scheme != "https" {
-		body, _, err := s.exchangeDoHHTTP(ctx, query, &http.Client{Timeout: dohTimeout})
+		client := &http.Client{
+			Timeout:   dohTimeout,
+			Transport: s.newProtectedHTTPTransport(),
+		}
+		body, _, err := s.exchangeDoHHTTP(ctx, query, client)
 		return body, err
 	}
 
@@ -337,7 +361,7 @@ func (s bootstrapDnsServer) newDoHRequest(ctx context.Context, query []byte) (*h
 func (s bootstrapDnsServer) newDoHH2Client(host string) *http.Client {
 	tr := &http2.Transport{
 		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-			return utlsDialContext(ctx, network, addr, host, true, s.tlsConfig)
+			return utlsDialContext(ctx, s.dialer(), network, addr, host, true, s.tlsConfig)
 		},
 	}
 	return &http.Client{Transport: tr, Timeout: dohTimeout}
@@ -347,10 +371,22 @@ func (s bootstrapDnsServer) newDoHH2Client(host string) *http.Client {
 func (s bootstrapDnsServer) newDoHH1Client(host string) *http.Client {
 	tr := &http.Transport{
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return utlsDialContext(ctx, network, addr, host, false, s.tlsConfig)
+			return utlsDialContext(ctx, s.dialer(), network, addr, host, false, s.tlsConfig)
 		},
 	}
 	return &http.Client{Transport: tr, Timeout: dohTimeout}
+}
+
+// newProtectedHTTPTransport returns an http.Transport that dials through the
+// protected dialer without TLS. It is used for plaintext DoH to local/test
+// resolvers.
+func (s bootstrapDnsServer) newProtectedHTTPTransport() http.RoundTripper {
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return s.dialer().DialContext(ctx, network, addr)
+		},
+	}
+	return tr
 }
 
 // parseAAAAAnswers parses a DNS response and extracts the AAAA addresses.
@@ -452,8 +488,8 @@ var utlsHello = utls.HelloChrome_Auto
 // When requireH2 is true the connection must have negotiated ALPN "h2";
 // otherwise it is closed and an error is returned so the DoH caller can fall
 // back to HTTP/1.1.
-func utlsDialContext(ctx context.Context, network, addr, serverName string, requireH2 bool, verify *tls.Config) (*utls.UConn, error) {
-	rawConn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, addr)
+func utlsDialContext(ctx context.Context, dialer *net.Dialer, network, addr, serverName string, requireH2 bool, verify *tls.Config) (*utls.UConn, error) {
+	rawConn, err := dialer.DialContext(ctx, network, addr)
 	if err != nil {
 		return nil, err
 	}
