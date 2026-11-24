@@ -554,16 +554,18 @@ func (device *Device) handleDeviceLine(ipcDev *ipcSetDevice, key, value string) 
 		device.disableCookies.Store(val)
 
 	case "bootstrap_dns":
-		device.log.Verbosef("UAPI: Updating bootstrap DNS servers")
+		device.log.Verbosef("UAPI: Updating bootstrap DNS servers: %q", value)
 		if err := device.appendBootstrapDns(value); err != nil {
 			return ipcErrorf(ipc.IpcErrorInvalid, "failed to set bootstrap DNS: %w", err)
 		}
+		device.log.Verbosef("UAPI: bootstrap DNS configured (%d server(s))", device.bootstrapDnsCount())
 
 	case "ip4p_prefix":
-		device.log.Verbosef("UAPI: Updating IP4P prefix")
+		device.log.Verbosef("UAPI: Updating IP4P prefix: %q", value)
 		if err := device.setIP4PPrefix(value); err != nil {
 			return ipcErrorf(ipc.IpcErrorInvalid, "failed to set IP4P prefix: %w", err)
 		}
+		device.log.Verbosef("UAPI: IP4P prefix set to %q", value)
 
 	default:
 		return ipcErrorf(ipc.IpcErrorInvalid, "invalid UAPI device key: %v", key)

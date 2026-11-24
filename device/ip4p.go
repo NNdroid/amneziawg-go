@@ -163,6 +163,7 @@ func (device *Device) tryIP4PEndpoint(peer *Peer, value string) (bool, error) {
 	ip := device.ip4p
 	device.ip4pMutex.Unlock()
 	if ip == nil || !ip.prefixValid {
+		device.log.Verbosef("IP4P: endpoint %q not handled, IP4P not configured (prefixValid=%v, state=%v)", value, ip != nil && ip.prefixValid, ip != nil)
 		return false, nil
 	}
 
@@ -176,21 +177,27 @@ func (device *Device) tryIP4PEndpoint(peer *Peer, value string) (bool, error) {
 	// A literal IP4P IPv6 address decodes directly.
 	if addr, err := netip.ParseAddr(host); err == nil {
 		if ep, ok := ip.decodeIP4P(addr); ok {
+			device.log.Verbosef("IP4P: literal endpoint %q decoded to %v", value, ep)
 			peer.enableIP4P(value, host)
 			peer.setIP4PResolved(ep)
 			return true, nil
 		}
+		device.log.Verbosef("IP4P: literal %q does not match prefix %q; falling back to plain endpoint", value, ip.prefix)
 		return false, nil
 	}
 
 	// Otherwise treat it as a hostname to resolve via bootstrap DNS.
 	if len(ip.servers) == 0 {
+		device.log.Verbosef("IP4P: endpoint %q is a hostname but no bootstrap DNS servers configured; not handling as IP4P", value)
 		return false, nil
 	}
+	device.log.Verbosef("IP4P: resolving endpoint host %q via %d bootstrap DNS server(s)", host, len(ip.servers))
 	ep, err := ip.resolveIP4P(context.Background(), host)
 	if err != nil {
+		device.log.Errorf("IP4P: resolve of %q failed: %v", host, err)
 		return true, err
 	}
+	device.log.Verbosef("IP4P: endpoint host %q resolved to %v", host, ep)
 	peer.enableIP4P(value, host)
 	peer.setIP4PResolved(ep)
 	return true, nil
@@ -203,13 +210,32 @@ func (device *Device) startIP4PRefresher() {
 	ip := device.ip4p
 	device.ip4pMutex.Unlock()
 	if ip == nil || !ip.prefixValid || len(ip.servers) == 0 {
+		device.log.Verbosef("IP4P refresher not started (configured=%v, prefixValid=%v, servers=%d)",
+			ip != nil, ip != nil && ip.prefixValid, func() int {
+				if ip == nil {
+					return 0
+				}
+				return len(ip.servers)
+			}())
 		return
 	}
 	if !ip.running.CompareAndSwap(false, true) {
 		return
 	}
 	ip.stop = make(chan struct{})
+	device.log.Verbosef("IP4P refresher started (prefix=%q, %d server(s))", ip.prefix, len(ip.servers))
 	go device.ip4pRefreshLoop(ip)
+}
+
+// bootstrapDnsCount returns the number of configured bootstrap DNS servers.
+// It is used for diagnostics in UAPI logging.
+func (device *Device) bootstrapDnsCount() int {
+	device.ip4pMutex.Lock()
+	defer device.ip4pMutex.Unlock()
+	if device.ip4p == nil {
+		return 0
+	}
+	return len(device.ip4p.servers)
 }
 
 // stopRefresher stops the background IP4P refresher goroutine.
@@ -248,6 +274,7 @@ func (device *Device) refreshIP4PEndpoints(ctx context.Context, ip *ip4pState) {
 	}
 	device.peers.RUnlock()
 
+	var refreshed int
 	for _, peer := range peers {
 		if !peer.ip4p.enabled {
 			continue
@@ -260,5 +287,7 @@ func (device *Device) refreshIP4PEndpoints(ctx context.Context, ip *ip4pState) {
 		}
 		device.log.Verbosef("IP4P refresh %q -> %v", host, addrPort)
 		peer.setIP4PResolved(addrPort)
+		refreshed++
 	}
+	device.log.Verbosef("IP4P refresh pass complete (%d endpoint(s) refreshed)", refreshed)
 }
